@@ -1,7 +1,6 @@
 import os
 import cv2
 from deepface import DeepFace
-from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
 from datetime import datetime
 
@@ -15,13 +14,19 @@ reference_image_path = os.path.join(script_dir, 'reference_image.jpg')
 # Ensure output folder exists
 os.makedirs(output_folder, exist_ok=True)
 
+# Pre-load the model to avoid multiple downloads
+print("Initializing face recognition model...")
+DeepFace.verify(img1_path=reference_image_path, img2_path=reference_image_path)
+print("Model initialized.")
+
 
 def crop_face(image_path, output_path):
     try:
         # Verify the face
         result = DeepFace.verify(img1_path=reference_image_path,
                                  img2_path=image_path,
-                                 enforce_detection=False)
+                                 enforce_detection=False,
+                                 model_name='VGG-Face')
 
         if result['verified']:
             # If face is verified, crop and save
@@ -52,13 +57,10 @@ def crop_face(image_path, output_path):
 def process_images():
     image_files = [f for f in os.listdir(input_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-    def process_image(image_file):
+    for image_file in tqdm(image_files, desc="Processing images"):
         input_path = os.path.join(input_folder, image_file)
         output_path = os.path.join(output_folder, f"cropped_{image_file}")
         crop_face(input_path, output_path)
-
-    with ThreadPoolExecutor() as executor:
-        list(tqdm(executor.map(process_image, image_files), total=len(image_files), desc="Processing images"))
 
 
 if __name__ == "__main__":
