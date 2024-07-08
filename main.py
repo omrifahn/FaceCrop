@@ -1,46 +1,52 @@
 import os
-from mtcnn import MTCNN
 import cv2
+from deepface import DeepFace
 from concurrent.futures import ThreadPoolExecutor
 from tqdm import tqdm
+from datetime import datetime
 
 # Set up the paths
 script_dir = os.path.dirname(os.path.abspath(__file__))
 input_folder = os.path.join(script_dir, 'omrisFullPhotos')
-output_folder = os.path.join(script_dir, 'omrisCroppedPhotos')
+timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+output_folder = os.path.join(script_dir, f'omrisCroppedPhotos_{timestamp}')
+reference_image_path = os.path.join(script_dir, 'reference_image.jpg')
 
 # Ensure output folder exists
 os.makedirs(output_folder, exist_ok=True)
 
-# Initialize the MTCNN detector
-detector = MTCNN()
-
 
 def crop_face(image_path, output_path):
-    img = cv2.imread(image_path)
-    if img is None:
-        print(f"Failed to read image: {image_path}")
-        return
+    try:
+        # Verify the face
+        result = DeepFace.verify(img1_path=reference_image_path,
+                                 img2_path=image_path,
+                                 enforce_detection=False)
 
-    rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    results = detector.detect_faces(rgb_img)
+        if result['verified']:
+            # If face is verified, crop and save
+            img = cv2.imread(image_path)
+            face = result['face2']
+            x, y, w, h = face['x'], face['y'], face['w'], face['h']
 
-    if results:
-        x, y, w, h = results[0]['box']
-        center_x = x + w // 2
-        center_y = y + h // 2
-        square_size = max(w, h)
+            # Calculate square crop
+            square_size = max(w, h)
+            center_x = x + w // 2
+            center_y = y + h // 2
 
-        top = max(0, center_y - square_size // 2)
-        left = max(0, center_x - square_size // 2)
-        bottom = min(img.shape[0], top + square_size)
-        right = min(img.shape[1], left + square_size)
+            square_left = max(0, center_x - square_size // 2)
+            square_top = max(0, center_y - square_size // 2)
+            square_right = min(img.shape[1], square_left + square_size)
+            square_bottom = min(img.shape[0], square_top + square_size)
 
-        face_square = img[top:bottom, left:right]
-        face_square = cv2.resize(face_square, (256, 256))  # Resize to a standard size
-        cv2.imwrite(output_path, face_square)
-    else:
-        print(f"No face detected in {image_path}")
+            face_square = img[square_top:square_bottom, square_left:square_right]
+            face_square = cv2.resize(face_square, (256, 256))
+
+            cv2.imwrite(output_path, face_square)
+        else:
+            print(f"No matching face found in {image_path}")
+    except Exception as e:
+        print(f"Error processing {image_path}: {str(e)}")
 
 
 def process_images():
