@@ -4,10 +4,8 @@ import numpy as np
 from deepface import DeepFace
 from tqdm import tqdm
 from datetime import datetime
-from multiprocessing import Pool, cpu_count
 import gc
 
-# Configuration parameters
 CONFIG = {
     'input_folder': 'omrisFullPhotos',
     'reference_image': 'reference_image.jpg',
@@ -16,8 +14,7 @@ CONFIG = {
     'face_model': "VGG-Face",
     'output_size': (256, 256),
     'enforce_detection': False,
-    'num_processes': 4,  # Limit to 4 processes or less
-    'batch_size': 20  # Process images in batches of 10
+    'batch_size': 50
 }
 
 
@@ -44,16 +41,14 @@ def initialize_model(reference_image_path):
     return reference_embedding
 
 
-def process_image(args):
-    image_file, input_folder, confidence_folders, reference_embedding = args
+def process_image(image_file, input_folder, confidence_folders, reference_embedding):
     input_path = os.path.join(input_folder, image_file)
 
     try:
         img = cv2.imread(input_path)
         faces = DeepFace.extract_faces(img_path=img, enforce_detection=CONFIG['enforce_detection'])
         if not faces:
-            print(f"No face found in {input_path}")
-            return
+            return f"No face found in {input_path}"
 
         embeddings = DeepFace.represent(img_path=img, model_name=CONFIG['face_model'],
                                         enforce_detection=CONFIG['enforce_detection'])
@@ -77,8 +72,7 @@ def process_image(args):
         elif isinstance(facial_area, (list, tuple)) and len(facial_area) == 4:
             x, y, w, h = facial_area
         else:
-            print(f"Unexpected facial_area format in {input_path}")
-            return
+            return f"Unexpected facial_area format in {input_path}"
 
         square_size = max(w, h)
         center_x, center_y = x + w // 2, y + h // 2
@@ -91,11 +85,10 @@ def process_image(args):
         face_square = cv2.resize(face_square, CONFIG['output_size'])
         cv2.imwrite(output_path, face_square)
 
-        print(f"Face cropped and saved: {output_path} (Confidence: {confidence:.2f})")
+        return f"Face cropped and saved: {output_path} (Confidence: {confidence:.2f})"
     except Exception as e:
-        print(f"Error processing {input_path}: {str(e)}")
+        return f"Error processing {input_path}: {str(e)}"
     finally:
-        # Explicitly delete large objects to free memory
         del img, faces, embeddings
         gc.collect()
 
@@ -111,18 +104,18 @@ def main():
 
     print(f"Processing images from: {input_folder}")
     print(f"Saving cropped images to: {output_base}")
-    print(f"Using {CONFIG['num_processes']} processes for parallel processing.")
 
     image_files = [f for f in os.listdir(input_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-    # Process images in batches
-    with Pool(processes=CONFIG['num_processes']) as pool:
-        for i in range(0, len(image_files), CONFIG['batch_size']):
-            batch = image_files[i:i + CONFIG['batch_size']]
-            args_list = [(image_file, input_folder, confidence_folders, reference_embedding) for image_file in batch]
-            list(tqdm(pool.imap(process_image, args_list), total=len(batch),
-                      desc=f"Processing batch {i // CONFIG['batch_size'] + 1}"))
-            gc.collect()  # Force garbage collection after each batch
+    for i in range(0, len(image_files), CONFIG['batch_size']):
+        batch = image_files[i:i + CONFIG['batch_size']]
+        print(f"\nProcessing batch {i // CONFIG['batch_size'] + 1} of {len(image_files) // CONFIG['batch_size'] + 1}")
+
+        for image_file in tqdm(batch):
+            result = process_image(image_file, input_folder, confidence_folders, reference_embedding)
+            print(result)
+
+        gc.collect()
 
     print("Processing complete!")
 
