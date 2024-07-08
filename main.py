@@ -5,117 +5,108 @@ from deepface import DeepFace
 from tqdm import tqdm
 from datetime import datetime
 
-# Set up the paths
-script_dir = os.path.dirname(os.path.abspath(__file__))
-input_folder = os.path.join(script_dir, 'omrisFullPhotos')
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-output_base_folder = os.path.join(script_dir, f'omrisCroppedPhotos_{timestamp}')
-reference_image_path = os.path.join(script_dir, 'reference_image.jpg')
+# Configuration parameters
+CONFIG = {
+    'input_folder': 'omrisFullPhotos',
+    'reference_image': 'reference_image.jpg',
+    'output_folder_prefix': 'omrisCroppedPhotos',
+    'confidence_ranges': range(0, 100, 10),
+    'face_model': "VGG-Face",
+    'output_size': (256, 256),
+    'enforce_detection': False
+}
 
-# Create confidence-based folders
-confidence_folders = {}
-for i in range(0, 100, 10):
-    folder_name = f"{i:02d}-{i + 10:02d}"
-    folder_path = os.path.join(output_base_folder, folder_name)
-    os.makedirs(folder_path, exist_ok=True)
-    confidence_folders[i] = folder_path
+def setup_folders(script_dir, timestamp):
+    output_base = os.path.join(script_dir, f"{CONFIG['output_folder_prefix']}_{timestamp}")
+    confidence_folders = {
+        i: os.path.join(output_base, f"{i:02d}-{i+10:02d}")
+        for i in CONFIG['confidence_ranges']
+    }
+    for folder in confidence_folders.values():
+        os.makedirs(folder, exist_ok=True)
+    return output_base, confidence_folders
 
-# Pre-load the model to avoid multiple downloads
-print("Initializing face recognition model...")
-DeepFace.verify(img1_path=reference_image_path, img2_path=reference_image_path)
-print("Model initialized.")
+def initialize_model(reference_image_path):
+    print("Initializing face recognition model...")
+    DeepFace.verify(img1_path=reference_image_path, img2_path=reference_image_path)
+    reference_embedding = DeepFace.represent(
+        img_path=reference_image_path,
+        model_name=CONFIG['face_model'],
+        enforce_detection=CONFIG['enforce_detection']
+    )[0]["embedding"]
+    print("Model initialized.")
+    return reference_embedding
 
-# Get the reference face embedding
-reference_embedding = \
-DeepFace.represent(img_path=reference_image_path, model_name="VGG-Face", enforce_detection=False)[0]["embedding"]
-
-
-def find_best_face(image_path):
+def find_best_face(image_path, reference_embedding):
     try:
-        # Detect all faces in the image
-        faces = DeepFace.extract_faces(img_path=image_path, enforce_detection=False)
+        faces = DeepFace.extract_faces(img_path=image_path, enforce_detection=CONFIG['enforce_detection'])
         if not faces:
             return None, 0
-
-        # Get embeddings for all detected faces
-        embeddings = DeepFace.represent(img_path=image_path, model_name="VGG-Face", enforce_detection=False)
-
-        # Calculate cosine similarity between reference and each detected face
-        similarities = []
-        for embedding in embeddings:
-            similarity = np.dot(reference_embedding, embedding["embedding"]) / (
-                        np.linalg.norm(reference_embedding) * np.linalg.norm(embedding["embedding"]))
-            similarities.append(similarity)
-
-        # Find the face with the highest similarity
-        best_face_index = np.argmax(similarities)
-        best_similarity = similarities[best_face_index]
-        return faces[best_face_index], best_similarity
-
+        embeddings = DeepFace.represent(img_path=image_path, model_name=CONFIG['face_model'], enforce_detection=CONFIG['enforce_detection'])
+        similarities = [
+            np.dot(reference_embedding, emb["embedding"]) / (np.linalg.norm(reference_embedding) * np.linalg.norm(emb["embedding"]))
+            for emb in embeddings
+        ]
+        best_index = np.argmax(similarities)
+        return faces[best_index], similarities[best_index]
     except Exception as e:
         print(f"Error processing {image_path}: {str(e)}")
         return None, 0
 
-
-def crop_face(image_path, output_path, confidence):
-    best_face, similarity = find_best_face(image_path)
-    if best_face is not None:
-        img = cv2.imread(image_path)
-        facial_area = best_face["facial_area"]
-
-        # Handle different possible formats of facial_area
-        if isinstance(facial_area, dict):
-            x = facial_area.get('x', 0)
-            y = facial_area.get('y', 0)
-            w = facial_area.get('w', 0)
-            h = facial_area.get('h', 0)
-        elif isinstance(facial_area, (list, tuple)) and len(facial_area) == 4:
-            x, y, w, h = facial_area
-        else:
-            print(f"Unexpected facial_area format in {image_path}")
-            return
-
-        # Calculate square crop
-        square_size = max(w, h)
-        center_x = x + w // 2
-        center_y = y + h // 2
-
-        square_left = max(0, center_x - square_size // 2)
-        square_top = max(0, center_y - square_size // 2)
-        square_right = min(img.shape[1], square_left + square_size)
-        square_bottom = min(img.shape[0], square_top + square_size)
-
-        face_square = img[square_top:square_bottom, square_left:square_right]
-        face_square = cv2.resize(face_square, (256, 256))
-
-        cv2.imwrite(output_path, face_square)
-        print(f"Face cropped and saved: {output_path} (Confidence: {confidence:.2f})")
-        return True
+def crop_and_save_face(image_path, output_path, facial_area):
+    img = cv2.imread(image_path)
+    if isinstance(facial_area, dict):
+        x, y, w, h = [facial_area.get(key, 0) for key in ('x', 'y', 'w', 'h')]
+    elif isinstance(facial_area, (list, tuple)) and len(facial_area) == 4:
+        x, y, w, h = facial_area
     else:
-        print(f"No face found in {image_path}")
+        print(f"Unexpected facial_area format in {image_path}")
         return False
 
+    square_size = max(w, h)
+    center_x, center_y = x + w // 2, y + h // 2
+    left = max(0, center_x - square_size // 2)
+    top = max(0, center_y - square_size // 2)
+    right = min(img.shape[1], left + square_size)
+    bottom = min(img.shape[0], top + square_size)
 
-def process_images():
+    face_square = img[top:bottom, left:right]
+    face_square = cv2.resize(face_square, CONFIG['output_size'])
+    cv2.imwrite(output_path, face_square)
+    return True
+
+def process_image(image_file, input_folder, confidence_folders, reference_embedding):
+    input_path = os.path.join(input_folder, image_file)
+    best_face, similarity = find_best_face(input_path, reference_embedding)
+    if best_face is None:
+        print(f"No face found in {input_path}")
+        return
+
+    confidence = similarity * 100
+    folder_index = min(CONFIG['confidence_ranges'], key=lambda x: abs(x - confidence))
+    output_folder = confidence_folders[folder_index]
+    output_path = os.path.join(output_folder, f"cropped_{image_file}")
+
+    if crop_and_save_face(input_path, output_path, best_face["facial_area"]):
+        print(f"Face cropped and saved: {output_path} (Confidence: {confidence:.2f})")
+
+def main():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    input_folder = os.path.join(script_dir, CONFIG['input_folder'])
+    reference_image_path = os.path.join(script_dir, CONFIG['reference_image'])
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    output_base, confidence_folders = setup_folders(script_dir, timestamp)
+    reference_embedding = initialize_model(reference_image_path)
+
+    print(f"Processing images from: {input_folder}")
+    print(f"Saving cropped images to: {output_base}")
+
     image_files = [f for f in os.listdir(input_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-
     for image_file in tqdm(image_files, desc="Processing images"):
-        input_path = os.path.join(input_folder, image_file)
-        _, similarity = find_best_face(input_path)
+        process_image(image_file, input_folder, confidence_folders, reference_embedding)
 
-        # Convert similarity to confidence percentage
-        confidence = similarity * 100
-
-        # Determine which folder to save in
-        folder_index = min(int(confidence // 10) * 10, 90)
-        output_folder = confidence_folders[folder_index]
-
-        output_path = os.path.join(output_folder, f"cropped_{image_file}")
-        crop_face(input_path, output_path, confidence)
-
+    print("Processing complete!")
 
 if __name__ == "__main__":
-    print(f"Processing images from: {input_folder}")
-    print(f"Saving cropped images to: {output_base_folder}")
-    process_images()
-    print("Processing complete!")
+    main()
