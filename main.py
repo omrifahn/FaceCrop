@@ -4,6 +4,7 @@ import numpy as np
 from deepface import DeepFace
 from tqdm import tqdm
 from datetime import datetime
+from multiprocessing import Pool, cpu_count
 
 # Configuration parameters
 CONFIG = {
@@ -13,18 +14,21 @@ CONFIG = {
     'confidence_ranges': range(0, 100, 10),
     'face_model': "VGG-Face",
     'output_size': (256, 256),
-    'enforce_detection': False
+    'enforce_detection': False,
+    'num_processes': 3
 }
+
 
 def setup_folders(script_dir, timestamp):
     output_base = os.path.join(script_dir, f"{CONFIG['output_folder_prefix']}_{timestamp}")
     confidence_folders = {
-        i: os.path.join(output_base, f"{i:02d}-{i+10:02d}")
+        i: os.path.join(output_base, f"{i:02d}-{i + 10:02d}")
         for i in CONFIG['confidence_ranges']
     }
     for folder in confidence_folders.values():
         os.makedirs(folder, exist_ok=True)
     return output_base, confidence_folders
+
 
 def initialize_model(reference_image_path):
     print("Initializing face recognition model...")
@@ -37,14 +41,17 @@ def initialize_model(reference_image_path):
     print("Model initialized.")
     return reference_embedding
 
+
 def find_best_face(image_path, reference_embedding):
     try:
         faces = DeepFace.extract_faces(img_path=image_path, enforce_detection=CONFIG['enforce_detection'])
         if not faces:
             return None, 0
-        embeddings = DeepFace.represent(img_path=image_path, model_name=CONFIG['face_model'], enforce_detection=CONFIG['enforce_detection'])
+        embeddings = DeepFace.represent(img_path=image_path, model_name=CONFIG['face_model'],
+                                        enforce_detection=CONFIG['enforce_detection'])
         similarities = [
-            np.dot(reference_embedding, emb["embedding"]) / (np.linalg.norm(reference_embedding) * np.linalg.norm(emb["embedding"]))
+            np.dot(reference_embedding, emb["embedding"]) / (
+                        np.linalg.norm(reference_embedding) * np.linalg.norm(emb["embedding"]))
             for emb in embeddings
         ]
         best_index = np.argmax(similarities)
@@ -52,6 +59,7 @@ def find_best_face(image_path, reference_embedding):
     except Exception as e:
         print(f"Error processing {image_path}: {str(e)}")
         return None, 0
+
 
 def crop_and_save_face(image_path, output_path, facial_area):
     img = cv2.imread(image_path)
@@ -75,7 +83,9 @@ def crop_and_save_face(image_path, output_path, facial_area):
     cv2.imwrite(output_path, face_square)
     return True
 
-def process_image(image_file, input_folder, confidence_folders, reference_embedding):
+
+def process_image(args):
+    image_file, input_folder, confidence_folders, reference_embedding = args
     input_path = os.path.join(input_folder, image_file)
     best_face, similarity = find_best_face(input_path, reference_embedding)
     if best_face is None:
@@ -90,6 +100,7 @@ def process_image(image_file, input_folder, confidence_folders, reference_embedd
     if crop_and_save_face(input_path, output_path, best_face["facial_area"]):
         print(f"Face cropped and saved: {output_path} (Confidence: {confidence:.2f})")
 
+
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     input_folder = os.path.join(script_dir, CONFIG['input_folder'])
@@ -103,10 +114,17 @@ def main():
     print(f"Saving cropped images to: {output_base}")
 
     image_files = [f for f in os.listdir(input_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-    for image_file in tqdm(image_files, desc="Processing images"):
-        process_image(image_file, input_folder, confidence_folders, reference_embedding)
+
+    # Prepare arguments for parallel processing
+    args_list = [(image_file, input_folder, confidence_folders, reference_embedding) for image_file in image_files]
+
+    # Use multiprocessing to process images in parallel
+    with Pool(processes=CONFIG['num_processes']) as pool:
+        print(f"Using {CONFIG['num_processes']} processes for parallel processing.")
+        list(tqdm(pool.imap(process_image, args_list), total=len(image_files), desc="Processing images"))
 
     print("Processing complete!")
+
 
 if __name__ == "__main__":
     main()
